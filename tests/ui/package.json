@@ -1,0 +1,1 @@
+{"name":"autopilot-ui-tests","private":true,"version":"1.0.0","scripts":{"test":"node smoke.mjs"},"dependencies":{"jsdom":"^24.1.0"}}
