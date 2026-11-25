@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220"><title>AUTOPILOT · Sign in</title><link rel="stylesheet" href="/static/style.css"></head>
+<body><main class="login"><div class="panel">
+<img src="/static/icon.svg" width="56" height="56" alt="">
+<h1>AUTOPILOT</h1><p class="muted">Enter your app password to continue.</p>
+{% if error %}<p class="banner bad" role="alert">Wrong password. Try again.</p>{% endif %}
+{% if locked %}<p class="banner bad" role="alert">Too many attempts. Wait a minute and try again.</p>{% endif %}
+<form method="post" action="/login"><label>Password<input name="password" type="password" autocomplete="current-password" autofocus required></label>
+<button class="btn primary block">Unlock</button></form>
+<p class="muted small">No password set in <code>.env</code>? Then no login is required: open the home page directly.</p>
+</div></main></body></html>

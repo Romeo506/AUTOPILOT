@@ -1,0 +1,8 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+jobs:
+  note:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo 'AUTOPILOT runs on Android through Termux and installs as a PWA (see README). It is not a native Android project, so this workflow intentionally does not produce an untested APK.'

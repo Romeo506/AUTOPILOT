@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b1220"><link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml"><link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="stylesheet" href="/static/style.css"><title>AUTOPILOT</title></head>
+<body>
+<header class="top"><img src="/static/icon.svg" width="30" height="30" alt=""><div><b>AUTOPILOT</b><small id="subtitle">{{ business }}</small></div>
+<button class="btn ghost small" id="refreshBtn" aria-label="Refresh">⟳</button></header>
+<main id="view" aria-live="polite"><p class="muted pad">Loading…</p></main>
+<div id="jobTray" class="tray" hidden></div>
+<nav class="tabs" id="tabs" aria-label="Sections">
+<a href="#home" data-tab="home"><i>⌂</i>Home</a><a href="#leads" data-tab="leads"><i>◎</i>Leads</a>
+<a href="#studio" data-tab="studio"><i>✂</i>Studio</a><a href="#clients" data-tab="clients"><i>☰</i>Clients</a>
+<a href="#approvals" data-tab="approvals"><i>✔</i>Approve<span class="badge" id="apprBadge" hidden>0</span></a>
+<a href="#money" data-tab="money"><i>＄</i>Money</a></nav>
+<div id="sheet" class="sheet" hidden><div class="sheet-box" role="dialog" aria-modal="true"><div class="sheet-head"><b id="sheetTitle"></b><button class="btn ghost small" id="sheetClose" aria-label="Close">✕</button></div><div id="sheetBody"></div></div></div>
+<div id="toast" class="toast" hidden role="status"></div>
+<script src="/static/app.js"></script></body></html>

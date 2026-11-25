@@ -1,0 +1,16 @@
+name: Package AUTOPILOT source
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  zip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create source ZIP
+        run: zip -r AUTOPILOT-source.zip . -x '.git/*' '.venv/*' 'data/*' '*.pyc' '*/node_modules/*' '.env'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AUTOPILOT-source
+          path: AUTOPILOT-source.zip
