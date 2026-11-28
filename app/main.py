@@ -8,6 +8,7 @@ import json
 import mimetypes
 import re
 import shutil
+import subprocess
 import threading
 import uuid
 from contextlib import asynccontextmanager
@@ -24,7 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import approvals as appr
 from . import leads as leadsvc
-from . import money, video
+from . import money, pipeline, transcribe, video
 from .brief import analyze_brief
 from .config import BASE, Settings
 from .db import Database, loads, now
@@ -156,7 +157,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return {"version": "2.0.0", "ffmpeg": t["ffmpeg"] and t["ffprobe"], "password_set": bool(S.password),
                 "smtp_configured": S.smtp_configured, "stripe_webhook_configured": bool(S.stripe_webhook_secret),
                 "scan_interval_minutes": S.scan_interval_minutes, "import_dirs": [str(p) for p in S.import_dirs],
-                "presets": video.PRESETS, "aspects": list(video.ASPECTS), "max_upload_mb": S.max_upload_mb}
+                "presets": video.PRESETS, "aspects": list(video.ASPECTS), "max_upload_mb": S.max_upload_mb,
+                "transcriber": transcribe.status(), "caption_styles": list(video.CAPTION_STYLES)}
 
     @app.get("/api/dashboard")
     def dashboard():
@@ -440,12 +442,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ------------------------------------------------------------ rendering & clips
     def requirements_for(project_id, aspect, preset):
-        if project_id:
-            p = db.one("SELECT requirements_json FROM projects WHERE id=?", (project_id,))
-            req = loads(p["requirements_json"], {}) if p else {}
-            if req:
-                return {**req, "aspect": req.get("aspect") or aspect}
-        return {"aspect": aspect, "max_seconds": (video.PRESETS.get(preset) or {}).get("max_seconds")}
+        return pipeline.requirements_for(db, project_id, aspect, preset)
 
     def clip_public(c):
         c = dict(c)
@@ -481,24 +478,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         cues = load_cues(s) if want_caps else None
         if want_caps and not cues:
             bad("Captions requested but no SRT/VTT has been uploaded for this source")
+        try:
+            style = video.normalize_style(d.get("style"))
+        except video.VideoError as e:
+            bad(str(e))
         normalize = str(d.get("normalize", "true")).lower() in {"1", "true", "yes", "on"}
-        info = {"duration": s["duration"], "fps": s["fps"], "has_audio": bool(s["has_audio"])}
         req = requirements_for(pid, aspect, preset)
 
         def run(progress):
-            made = []
-            for i, r in enumerate(clean):
-                progress(i / len(clean), f"Rendering clip {i + 1}/{len(clean)}…")
-                out = S.exports / f"clip_{uuid.uuid4().hex[:10]}.mp4"
-                clip_cues = video.cues_for_clip(cues, r["start"], r["end"]) if cues else None
-                meta = video.render_clip(s["path"], out, r["start"], r["end"], aspect, fit, clip_cues or None, normalize, info)
-                progress((i + 0.7) / len(clean), f"Checking clip {i + 1}/{len(clean)}…")
-                qa = video.qa_check(out, req, expect_audio=bool(s["has_audio"]), captioned=meta["captioned"])
-                cid, _ = db.run("INSERT INTO clips(filename,path,created,project_id,source_id,start,end,aspect,preset,title,captioned,duration,size,qa_status,qa_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                (out.name, str(out), now(), pid, s["id"], r["start"], r["end"], aspect, preset or None, r["title"], int(meta["captioned"]),
-                                 meta["duration"], meta["size"], qa["status"], json.dumps(qa)))
-                made.append({"id": cid, "filename": out.name, "qa_status": qa["status"]})
-            return {"created": made}
+            return pipeline.render_batch(db, S, s, clean, aspect, fit, preset, style, cues, pid, req, normalize, progress)
         return {"job_id": jobs.submit("render", run)}
 
     @app.get("/api/clips")
@@ -595,6 +583,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bad("Start time is beyond the end of the video", 422)
         return {"created": created}
 
+    @app.post("/api/sources/{sid}/transcribe")
+    async def transcribe_source(sid: int, request: Request):
+        s = src_or_404(sid)
+        lang = str((await params(request)).get("language") or "auto").lower()
+        if not re.fullmatch(r"auto|[a-z]{2,3}", lang):
+            bad("Invalid language code (use auto, en, ur, hi ...)")
+        if not s["has_audio"]:
+            bad("This video has no audio to transcribe.", 422)
+        t = transcribe.status()
+        if not t["available"]:
+            bad("Auto-captions are not installed. " + t["hint"] + " Or upload an SRT/VTT file.", 422)
+
+        def run(progress):
+            progress(0.05, "Listening to the audio (can take a few minutes)…")
+            cues = transcribe.transcribe(s["path"], lang)
+            p = S.uploads / f"captions_{sid}.txt"
+            p.write_text(transcribe.to_srt(cues), encoding="utf-8")
+            db.update("sources", sid, captions_path=str(p))
+            return {"cues": len(cues), "first": cues[0]["text"][:80]}
+        return {"job_id": jobs.submit("transcribe", run)}
+
+    @app.post("/api/projects/{pid}/logo")
+    async def upload_logo(pid: int, logo: UploadFile = File(...)):
+        proj_or_404(pid)
+        raw = await logo.read(3 * 1024 * 1024 + 1)
+        if len(raw) > 3 * 1024 * 1024:
+            bad("Logo is larger than 3 MB", 413)
+        tmp, out = S.work / f"logo_in_{uuid.uuid4().hex}", S.uploads / f"logo_{pid}.png"
+        tmp.write_bytes(raw)
+        try:
+            r = await run_in_threadpool(lambda: subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(tmp), "-frames:v", "1", str(out)],
+                                                               capture_output=True, text=True))
+            if r.returncode != 0:
+                out.unlink(missing_ok=True)
+                bad("Not a readable image (use PNG or JPG)", 422)
+        finally:
+            tmp.unlink(missing_ok=True)
+        return {"has_logo": True}
+
+    @app.delete("/api/projects/{pid}/logo")
+    def delete_logo(pid: int):
+        proj_or_404(pid)
+        (S.uploads / f"logo_{pid}.png").unlink(missing_ok=True)
+        return {"has_logo": False}
+
+    @app.post("/api/projects/{pid}/auto-process")
+    async def auto_process(pid: int, request: Request):
+        p = proj_or_404(pid)
+        d = await params(request)
+        s = src_or_404(int(fnum(d.get("source_id"))))
+        try:
+            style = video.normalize_style(d.get("style"))
+        except video.VideoError as e:
+            bad(str(e))
+        fit = d.get("fit", "crop")
+        lang = str(d.get("language") or "auto").lower()
+        if fit not in {"crop", "blur"} or not re.fullmatch(r"auto|[a-z]{2,3}", lang):
+            bad("Invalid fit mode or language")
+        yes = {"1", "true", "yes", "on"}
+        opts = {"fit": fit, "preset": d.get("preset") or "", "style": style, "language": lang,
+                "captions": str(d.get("captions", "")).lower() in yes, "transcribe": str(d.get("transcribe", "true")).lower() in yes,
+                "normalize": str(d.get("normalize", "true")).lower() in yes}
+
+        def run(progress):
+            return pipeline.auto_process(db, S, p, db.one("SELECT * FROM sources WHERE id=?", (s["id"],)), opts, progress)
+        return {"job_id": jobs.submit("auto-process", run)}
+
     # ------------------------------------------------------------ jobs
     def job_public(j):
         j["result"] = loads(j.pop("result_json", None), None)
@@ -617,6 +672,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         p["revisions_used"] = db.one("SELECT COUNT(*) n FROM revisions WHERE project_id=?", (p["id"],))["n"]
         paid = db.one("SELECT COALESCE(SUM(amount),0) t FROM payments WHERE project_id=? AND status='paid'", (p["id"],))["t"]
         p["paid"], p["balance"] = paid, max(0.0, (p["price"] or 0) - paid)
+        p["has_logo"] = pipeline.logo_path_for(S, p["id"]) is not None
         return p
 
     def proj_or_404(pid):
