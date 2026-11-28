@@ -35,6 +35,54 @@ PRESETS = {
 }
 
 
+CAPTION_STYLES = ("classic", "pop", "box")
+CAPTION_POS = {"bottom": 2, "middle": 5, "top": 8}   # ASS alignment codes
+LOGO_POS = ("tr", "tl", "br", "bl")
+
+
+def normalize_style(d: dict | None) -> dict:
+    """Validate the optional look of a render. Unknown values are rejected, never guessed."""
+    d = d or {}
+    s = {"caption_style": str(d.get("caption_style") or "classic"), "caption_pos": str(d.get("caption_pos") or "bottom"),
+         "hook_text": str(d.get("hook_text") or "").strip()[:90], "logo_pos": str(d.get("logo_pos") or "tr"),
+         "logo": str(d.get("logo", "")).lower() in {"1", "true", "yes", "on"}}
+    if s["caption_style"] not in CAPTION_STYLES:
+        raise VideoError("Unknown caption style")
+    if s["caption_pos"] not in CAPTION_POS:
+        raise VideoError("Unknown caption position")
+    if s["logo_pos"] not in LOGO_POS:
+        raise VideoError("Unknown logo position")
+    try:
+        cx = float(d.get("crop_x", 0.5))
+    except (TypeError, ValueError):
+        raise VideoError("crop_x must be a number between 0 and 1") from None
+    if not 0 <= cx <= 1:
+        raise VideoError("crop_x must be a number between 0 and 1")
+    s["crop_x"] = cx
+    return s
+
+
+def chunk_cues(cues: list[dict], max_words: int = 3) -> list[dict]:
+    """Split sentence cues into short 'pop-in' phrases. Timing is ESTIMATED by spreading the cue's
+    duration over the phrases by letter count (no word-level timestamps are available from SRT)."""
+    out = []
+    for c in cues:
+        words = c["text"].split()
+        if not words:
+            continue
+        groups = [words[i:i + max_words] for i in range(0, len(words), max_words)]
+        if len(groups) > 1 and len(groups[-1]) == 1:  # no one-word orphan at the end
+            last = groups.pop()
+            groups[-1] += last
+        weights = [max(1, sum(len(w) for w in g)) for g in groups]
+        total, span, t = sum(weights), c["end"] - c["start"], c["start"]
+        for g, w in zip(groups, weights):
+            d = span * w / total
+            out.append({"start": t, "end": t + d, "text": " ".join(g)})
+            t += d
+    return out
+
+
 def tools_available() -> dict:
     return {"ffmpeg": bool(shutil.which("ffmpeg")), "ffprobe": bool(shutil.which("ffprobe"))}
 
@@ -251,16 +299,36 @@ def _ass_time(t: float) -> str:
     return f"{cs // 360000}:{cs // 6000 % 60:02d}:{cs // 100 % 60:02d}.{cs % 100:02d}"
 
 
-def make_ass(cues: list[dict], width: int, height: int) -> str:
+def make_ass(cues: list[dict], width: int, height: int, style: dict | None = None) -> str:
+    st = normalize_style(style)
+    cs = st["caption_style"]
     fs = round(min(width, height) * 0.065)
-    margin_v = round(height * (0.14 if height > width else 0.07))  # keep clear of platform UI
+    if cs == "pop":
+        fs = round(fs * 1.25)
+        cues = chunk_cues(cues)
+    pos = st["caption_pos"]
+    if pos == "bottom":
+        margin_v = round(height * (0.14 if height > width else 0.07))  # keep clear of platform UI
+    elif pos == "top":
+        margin_v = round(height * 0.10)
+    else:
+        margin_v = 0
     margin_h = round(width * 0.06)
+    primary = "&H0000FFFF" if cs == "pop" else "&H00FFFFFF"      # pop = yellow
+    box = cs == "box"
+    outline_col = "&H99000000" if box else "&H00000000"           # BorderStyle 3 draws the box in OutlineColour
+    outline = max(6, fs // 6) if box else max(3, fs // 14)
+    hook_fs, hook_mv = round(fs * 1.15), round(height * 0.09)
     head = (f"[Script Info]\nScriptType: v4.00+\nPlayResX: {width}\nPlayResY: {height}\nWrapStyle: 0\nScaledBorderAndShadow: yes\n\n"
             "[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, "
             "Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-            f"Style: Default,Arial,{fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,{max(3, fs // 14)},0,2,{margin_h},{margin_h},{margin_v},1\n\n"
+            f"Style: Default,Arial,{fs},{primary},{primary},{outline_col},&H80000000,1,0,0,0,100,100,0,0,{3 if box else 1},{outline},0,{CAPTION_POS[pos]},{margin_h},{margin_h},{margin_v},1\n"
+            f"Style: Hook,Arial,{hook_fs},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,{max(3, hook_fs // 14)},0,8,{margin_h},{margin_h},{hook_mv},1\n\n"
             "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n")
     rows = []
+    if st["hook_text"]:
+        ht = st["hook_text"].replace("{", "(").replace("}", ")").replace("\n", " ")
+        rows.append(f"Dialogue: 1,{_ass_time(0)},{_ass_time(3.0)},Hook,,0,0,0,,{{\\fad(250,300)}}{ht}")
     for c in cues:
         txt = c["text"].replace("{", "(").replace("}", ")").replace("\n", "\\N")
         rows.append(f"Dialogue: 0,{_ass_time(c['start'])},{_ass_time(c['end'])},Default,,0,0,0,,{txt}")
@@ -268,49 +336,58 @@ def make_ass(cues: list[dict], width: int, height: int) -> str:
 
 
 # ---------------------------------------------------------------- rendering
-def build_filter(aspect: str, fit: str, src_fps: float, captions: bool) -> str:
+def build_filter(aspect: str, fit: str, src_fps: float, ass: bool, crop_x: float = 0.5, logo: bool = False,
+                 logo_pos: str = "tr") -> tuple[str, str]:
+    """Returns (filter_complex graph, label of the final video stream)."""
     W, H = ASPECTS[aspect]
     fps = ",fps=30" if src_fps and src_fps > 30.5 else ""
     if fit == "blur":
-        g = (f"split[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=25:5[bg];"
-             f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{fps}")
+        g = (f"[0:v]split[a][b];[a]scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},boxblur=25:5[bg];"
+             f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1{fps}[v0]")
     else:
-        g = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H},setsar=1{fps}"
-    if captions:
-        g += ",ass=cap.ass"
-    return g
+        g = (f"[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,"
+             f"crop={W}:{H}:x='(in_w-out_w)*{crop_x:.3f}':y='(in_h-out_h)/2',setsar=1{fps}[v0]")
+    last = "v0"
+    if logo:
+        m, lw = round(W * 0.04), round(W * 0.18)
+        pos = {"tr": f"W-w-{m}:{m}", "tl": f"{m}:{m}", "br": f"W-w-{m}:H-h-{m}", "bl": f"{m}:H-h-{m}"}[logo_pos]
+        g += f";[1:v]scale={lw}:-1[lg];[{last}][lg]overlay={pos}[v1]"
+        last = "v1"
+    if ass:
+        g += f";[{last}]ass=cap.ass[v2]"
+        last = "v2"
+    return g, last
 
 
 def render_clip(src, out, start: float, end: float, aspect="9:16", fit="crop", cues: list[dict] | None = None,
-                normalize=True, info: dict | None = None) -> dict:
+                normalize=True, info: dict | None = None, style: dict | None = None, logo_path=None) -> dict:
     if aspect not in ASPECTS:
         raise VideoError("Unsupported aspect ratio")
     if fit not in {"crop", "blur"}:
         raise VideoError("fit must be 'crop' or 'blur'")
+    st = normalize_style(style)
     info = info or probe(src)
     end = min(end, info["duration"]) if info["duration"] else end
     dur = end - start
     if start < 0 or dur < 1:
         raise VideoError("Clip must be at least 1 second and inside the video")
     W, H = ASPECTS[aspect]
+    use_logo = bool(st["logo"] and logo_path and Path(logo_path).is_file())
+    captioned = bool(cues)
+    needs_ass = captioned or bool(st["hook_text"])
     with tempfile.TemporaryDirectory() as tmp:
-        captioned = bool(cues)
-        if captioned:
-            (Path(tmp) / "cap.ass").write_text(make_ass(cues, W, H), encoding="utf-8")
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-i", str(Path(src).resolve()),
-               "-t", f"{dur:.3f}", "-filter_complex" if fit == "blur" else "-vf", "", "-c:v", "libx264", "-preset", "veryfast",
-               "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
-        graph = build_filter(aspect, fit, info["fps"], captioned)
-        if fit == "blur":
-            graph = "[0:v]" + graph + "[v]"
-            cmd[cmd.index("")] = graph
-            cmd += ["-map", "[v]"]
-            if info["has_audio"]:
-                cmd += ["-map", "0:a:0"]
-        else:
-            cmd[cmd.index("")] = graph
+        if needs_ass:
+            (Path(tmp) / "cap.ass").write_text(make_ass(cues or [], W, H, st), encoding="utf-8")
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-ss", f"{start:.3f}", "-i", str(Path(src).resolve())]
+        if use_logo:
+            cmd += ["-i", str(Path(logo_path).resolve())]
+        graph, last = build_filter(aspect, fit, info["fps"], needs_ass, st["crop_x"], use_logo, st["logo_pos"])
+        cmd += ["-t", f"{dur:.3f}", "-filter_complex", graph, "-map", f"[{last}]"]
         if info["has_audio"]:
-            af = [f"afade=t=in:d=0.05", f"afade=t=out:st={max(0, dur - 0.2):.3f}:d=0.2"]
+            cmd += ["-map", "0:a:0"]
+        cmd += ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-pix_fmt", "yuv420p", "-movflags", "+faststart"]
+        if info["has_audio"]:
+            af = ["afade=t=in:d=0.05", f"afade=t=out:st={max(0, dur - 0.2):.3f}:d=0.2"]
             if normalize:
                 af.insert(0, "loudnorm=I=-16:TP=-1.5:LRA=11")
             cmd += ["-af", ",".join(af), "-c:a", "aac", "-b:a", "128k", "-ar", "44100"]
@@ -322,7 +399,7 @@ def render_clip(src, out, start: float, end: float, aspect="9:16", fit="crop", c
         Path(out).unlink(missing_ok=True)
         raise VideoError(f"FFmpeg could not render: {r.stderr[-400:]}")
     p = Path(out)
-    return {"duration": dur, "size": p.stat().st_size, "captioned": captioned}
+    return {"duration": dur, "size": p.stat().st_size, "captioned": captioned, "hook": bool(st["hook_text"]), "logo": use_logo}
 
 
 # ---------------------------------------------------------------- QA
