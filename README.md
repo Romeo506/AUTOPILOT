@@ -37,6 +37,19 @@ To import big videos without uploading, run `termux-setup-storage` once and use 
 | **Approve** | Every outgoing or binding action waits here: messages, contract acceptance, price/deadline commitments, deliveries, spending. Edit the text, then Approve or Reject. |
 | **Money** | Payment ledger, earnings per currency (paid / pending / expenses / net), CSV export. |
 
+## Editing options and Auto-process
+
+- **Looks (Studio -> Render):** crop focus (left / centre / right, to keep the speaker in frame), or a blurred-background fit;
+  caption styles *classic*, *pop-in short phrases* (yellow, 2-3 words at a time) and *black box*; caption position
+  (bottom / middle / top); an optional **hook text** for the first 3 seconds; and the **client's logo** (upload it on the project page).
+  *Pop-in timing is estimated*: the sentence time is spread over the phrases by letter count, because SRT files have no word timing.
+- **Auto-process (project page):** reads the project's requirements (number of clips, length, format, captions), finds the best
+  highlights, edits the clips, checks each against the brief and shows a requirement-by-requirement checklist. If the video has
+  no more strong highlights it fills with quieter parts and **marks them "filler"** so you review them. Nothing is sent to the client.
+- **Auto-captions (optional):** `bash scripts/install-whisper.sh` installs whisper.cpp (offline speech to text). Without it, use an SRT/VTT file.
+  *Verified here only with a stand-in program (it proves the wiring, not the recognition quality); the real whisper.cpp
+  build and its accuracy on your phone and your languages are untested.*
+
 ## What is implemented, and how it is verified
 
 | Requirement | Status |
@@ -45,7 +58,7 @@ To import big videos without uploading, run `termux-setup-storage` once and use 
 | 2 Analyse briefs | **Done, rule-based (no AI model):** platforms, format, length, count, captions, budget, deadline, links, unsupported requests, missing questions, scam flags. It only reports what the text says. |
 | 3 Auto-find highlights | **Done, signal-based:** audio energy, dynamics, activity, optional scene-change density, plus transcript density/hook words if you supply SRT/VTT. Cuts snap to pauses. It does **not** understand meaning; always preview. *Tested: finds a known loud segment.* |
 | 4 Shorts/Reels/TikTok/other formats | **Done:** 9:16, 1:1, 4:5, 16:9; crop or blurred-background fit; loudness normalisation; fades. Preset length limits are advisory defaults; the client's brief overrides them. |
-| 5 Captions, resize, cuts | **Done:** captions are burned in from an SRT/VTT you provide (*verified pixel-wise that they appear in the lower third*). **Not included:** automatic speech-to-text, word-by-word animated captions. |
+| 5 Captions, resize, cuts | **Done:** captions are burned in from an SRT/VTT you provide (*verified pixel-wise*), in three styles. Automatic speech-to-text is **optional** (whisper.cpp, see above) and not verified on a real phone. Exact word-by-word highlighting is not included. |
 | 6 Quality + requirement check | **Done:** decodes cleanly, H.264/yuv420p, resolution, aspect, min/max length, file size, audio present and audible (LUFS), black frames, captions requirement. Caption presence comes from render settings, not OCR. |
 | 7 Clients, deadlines, revisions, deliveries, earnings | **Done.** Overdue flags, revision limit warning, delivery history, per-currency earnings. |
 | 8 Payment tracking / integrations | **Done:** manual ledger, CSV, invoice with your own payment link/instructions, Stripe webhook (signature-verified, idempotent). *Stripe is tested with simulated signed events only, never against live Stripe.* PayPal and marketplace payment APIs are **not** implemented. |
@@ -84,7 +97,7 @@ change `HOST` set a strong `APP_PASSWORD` (sessions are signed, expire after 30 
 ```bash
 pip install -r requirements-dev.txt         # needs ffmpeg installed
 (cd tests/ui && npm install)                     # optional: enables the browser-level E2E test
-python -m pytest -q                         # 96 tests, about 2.5 min
+python -m pytest -q                         # about 3 min
 ```
 The suite covers auth, the brief analyser, feed scanning and SSRF protection, highlight detection, rendering
 in every aspect, caption burn-in, every QA rule, the whole approval gate, Stripe signatures, database migration

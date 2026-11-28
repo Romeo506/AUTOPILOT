@@ -156,6 +156,16 @@ setv(sel, 'paid'); sel.dispatchEvent(new window.Event('change', { bubbles: true 
 await waitFor(() => /Paid\s*60\.00/.test(view()), 'earnings updated');
 step('Record payment -> mark paid -> earnings summary updates');
 
+// 8b. One-tap auto-process on a second project, driven by its brief
+const p2 = await api('/api/projects', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client: 'Auto Client', price: 20, brief: '2 TikTok clips under 15 seconds with captions' }) });
+await go('#clients/' + p2.id); await waitFor(() => view().includes('Auto-process') && button('Auto-process (find, edit, check)'), 'auto-process panel');
+await click('Auto-process (find, edit, check)');
+await waitFor(() => !doc.querySelector('#sheet').hidden && txt(doc.querySelector('#sheetTitle')).includes('Auto-process result') && txt(sheet()).includes('All checks passed'), 'auto-process checklist', 120000);
+if (!txt(sheet()).includes('Quantity (need 2)') || !txt(sheet()).includes('Within maximum length')) throw new Error('checklist incomplete: ' + txt(sheet()));
+doc.querySelector('#sheetClose').click();
+await waitFor(() => view().includes('Clips (2)'), 'two clips attached to the project');
+step('Auto-process from the project page -> 2 clips + requirement checklist (all passed)');
+
 // 9. Every tab loads without an error banner
 for (const t of ['home', 'leads', 'studio', 'clients', 'approvals', 'money']) {
   await go('#' + t); await sleep(400);
