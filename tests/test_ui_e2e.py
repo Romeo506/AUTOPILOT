@@ -16,4 +16,4 @@ def test_ui_end_to_end():
                        env={"PATH": __import__("os").environ["PATH"], "PYTHON": sys.executable, "HOME": str(Path.home())})
     print(r.stdout, r.stderr)
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "12 UI steps passed" in r.stdout
+    assert "13 UI steps passed" in r.stdout
