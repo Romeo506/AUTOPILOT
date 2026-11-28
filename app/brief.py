@@ -30,7 +30,7 @@ CONTENT_TYPES = ["podcast", "interview", "webinar", "livestream", "live stream",
 # Things we do not implement. Reported so the user is never told a feature exists when it does not.
 UNSUPPORTED = [
     (r"word[- ]by[- ]word|karaoke|animated (captions|subtitles)|highlight(ed)? words|hormozi",
-     "Animated word-by-word captions are not supported (captions are sentence-level, burned in from an SRT/VTT file you provide)."),
+     "Exact word-by-word highlighting is not supported. Short pop-in captions are available, but their timing is estimated unless real word timestamps exist."),
     (r"face[- ]?track|auto[- ]?reframe|speaker[- ]?track|follow the speaker",
      "Face/speaker tracking is not supported: framing is centre-crop or blurred-background fit."),
     (r"\bb[- ]?roll\b|stock footage|\bemoji|sound effects?|\bsfx\b|\bmeme",
@@ -40,7 +40,7 @@ UNSUPPORTED = [
     (r"translat|dubb?(ed|ing)|multi[- ]?language|voice[- ]?over",
      "Translation, dubbing and voice-over are not supported."),
     (r"logo|watermark|brand(ed|ing) (template|kit|colors?)|intro|outro",
-     "Logos, branded templates and intros/outros are not added automatically."),
+     "Logo overlay works if you upload the client's logo on the project. Branded templates and intros/outros are not added automatically."),
     (r"thumbnail",
      "Thumbnails are not generated."),
 ]
